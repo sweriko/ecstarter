@@ -6,18 +6,24 @@ import { initPhysicsSystem }   from './systems/physics.ts';
 import { initRenderSyncSystem }from './systems/renderSync.ts';
 import { initDebugVisSystem }  from './systems/debugVis.ts';
 import { initCollisionSystem } from './systems/collision.ts';
+import { initTimeStepSystem }  from './systems/timeStep.ts';
 
 /** Create ECS world + pipeline */
 export function createECS(ctx: ECSContext) {
   const world = createWorld() as ECS;
   world.ctx  = ctx;
-  world.time = { dt: 0, then: performance.now() };
+  world.time = { 
+    dt: 0, 
+    then: performance.now(),
+    accumulator: 0
+  };
   
   // Create a collision event queue for Rapier
   const eventQueue = new ctx.rapier.EventQueue(true);
   world.ctx.eventQueue = eventQueue;
 
   const pipeline = pipe(
+    initTimeStepSystem(world),  // Run first to manage fixed timestep
     initInputSystem(world),
     initPlayerSystem(world),
     initPhysicsSystem(world),   // Physics runs before collision system to process contacts
@@ -48,6 +54,11 @@ export interface ECS {
   time: {
     dt: number;
     then: number;
+    accumulator: number;
+    fixedDt?: number;
+    alpha?: number;
+    physicsSteps?: number;
+    shouldRunPhysics?: boolean;
   };
   input?: any;
 }

@@ -143,6 +143,8 @@ export function initPlayerSystem(world: ECS) {
     prevJump = input.jump;
 
     if (FPController.moveState[pid] !== GROUNDED) {
+      // Apply gravity with framerate-independent scaling
+      // Using delta time directly for continuous forces like gravity
       FPController.vertVel[pid] = Math.max(FPController.vertVel[pid] - GRAVITY * w.time.dt, TERMINAL_FALL);
     } else {
       FPController.vertVel[pid] *= 0.8;
@@ -158,6 +160,7 @@ export function initPlayerSystem(world: ECS) {
     if (dir.lengthSq() > 0) dir.normalize();
     dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), holder.rotation.y);
 
+    // Base speed calculation
     const speed = WALK_SPEED *
                   (FPController.moveState[pid] === GROUNDED ? 1 : AIR_CONTROL) *
                   (input.sprint ? SPRINT_FACTOR : 1);
@@ -165,10 +168,13 @@ export function initPlayerSystem(world: ECS) {
     horiz.set(dir.x * speed, dir.z * speed);
 
     /* KCC integration ---------------------------------------------- */
+    // Always scale movement by delta time for frame independence
+    const dt = w.time.shouldRunPhysics ? w.time.fixedDt! : w.time.dt;
+    
     const requested = {
-      x: horiz.x * w.time.dt,
-      y: FPController.vertVel[pid] * w.time.dt,
-      z: horiz.y * w.time.dt
+      x: horiz.x * dt,
+      y: FPController.vertVel[pid] * dt,
+      z: horiz.y * dt
     };
     kcc.computeColliderMovement(collider, requested);
     const actual = kcc.computedMovement();

@@ -32,8 +32,11 @@ const canvas = document.getElementById('c') as HTMLCanvasElement;
     stats.begin();
     
     // Calculate delta time in seconds
-    world.time.dt = (t - world.time.then) * 0.001;
-    world.time.then = t;
+    const now = performance.now();
+    // Use a minimum delta time to prevent tiny stutters during fast displays 
+    const minDt = 1/240; // Minimum sensible delta (240Hz)
+    world.time.dt = Math.max(minDt, (now - world.time.then) * 0.001); // Convert ms to seconds
+    world.time.then = now;
 
     // Run all systems
     pipeline(world);
@@ -47,5 +50,8 @@ const canvas = document.getElementById('c') as HTMLCanvasElement;
     // Request next frame
     requestAnimationFrame(raf);
   };
+  
+  // Start the loop
+  world.time.then = performance.now();
   requestAnimationFrame(raf);
 })();
