@@ -231,15 +231,30 @@ function spawnBullet(
   Velocity.y[eid] = dir.y * BULLET_SPEED;
   Velocity.z[eid] = dir.z * BULLET_SPEED;
 
+  // Create a rigid body with CCD enabled to prevent tunneling at high speeds
   const rb = physics.createRigidBody(
     R.RigidBodyDesc.dynamic()
       .setTranslation(spawn.x, spawn.y, spawn.z)
       .setLinvel(dir.x * BULLET_SPEED, dir.y * BULLET_SPEED, dir.z * BULLET_SPEED)
-      .setCcdEnabled(true)
+      .setCcdEnabled(true) // Most important flag for bullet physics!
+      .setGravityScale(0.05) // Reduce gravity effect for more predictable trajectories
+      .setAngularDamping(0.5) // Dampen rotation
+      .setLinearDamping(0) // No damping on linear velocity
   );
+  
+  // Create a collider that will trigger the collision events
   physics.createCollider(
-    R.ColliderDesc.ball(0.1).setRestitution(0.6).setFriction(0.1), rb
+    R.ColliderDesc.ball(0.1)
+      .setRestitution(0.3) // Less bounce
+      .setFriction(0.1)
+      .setDensity(0.8) // Lighter bullets
+      // Enable collision events to ensure our collision system gets notified
+      .setActiveEvents(R.ActiveEvents.COLLISION_EVENTS),
+    rb
   );
+  
+  // Lock rotation axes for more stable bullet flight
+  rb.setEnabledRotations(false, false, false);
 
   maps.rb.set(eid, rb);
   RigidBodyRef.id[eid] = rb.handle;

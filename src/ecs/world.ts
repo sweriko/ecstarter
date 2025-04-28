@@ -12,14 +12,18 @@ export function createECS(ctx: ECSContext) {
   const world = createWorld() as ECS;
   world.ctx  = ctx;
   world.time = { dt: 0, then: performance.now() };
+  
+  // Create a collision event queue for Rapier
+  const eventQueue = new ctx.rapier.EventQueue(true);
+  world.ctx.eventQueue = eventQueue;
 
   const pipeline = pipe(
     initInputSystem(world),
     initPlayerSystem(world),
-    initCollisionSystem(world),  // Process collisions before projectiles
+    initPhysicsSystem(world),   // Physics runs before collision system to process contacts
+    initCollisionSystem(world), // Now handles Rapier collision events instead of raycasting
     initProjectileSystem(world),
-    initPhysicsSystem(world),
-    initDebugVisSystem(world),   // Debug visualization after physics update
+    initDebugVisSystem(world),
     initRenderSyncSystem(world)
   );
 
@@ -28,22 +32,22 @@ export function createECS(ctx: ECSContext) {
 
 /* -------------------------------------------------- */
 /* Types shared with scene & systems                  */
-export type ECS = ReturnType<typeof createWorld> & {
-  ctx:  ECSContext;
-  time: { dt: number; then: number };
-  input?: InputState;
-};
-
 export interface ECSContext {
-  rapier:   typeof import('@dimforge/rapier3d');
-  physics:  import('@dimforge/rapier3d').World;
-  three: {
-    scene:    THREE.Scene;
-    camera:   THREE.PerspectiveCamera;
-    renderer: THREE.WebGLRenderer;
-  };
+  rapier: any;
+  physics: any;
+  three: any;
   maps: {
-    mesh: Map<number, THREE.Object3D>;
-    rb:   Map<number, import('@dimforge/rapier3d').RigidBody>;
+    rb: Map<number, any>;
+    mesh: Map<number, any>;
   };
+  eventQueue?: any; // Added for collision detection
+}
+
+export interface ECS {
+  ctx: ECSContext;
+  time: {
+    dt: number;
+    then: number;
+  };
+  input?: any;
 }

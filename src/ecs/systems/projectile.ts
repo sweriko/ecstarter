@@ -49,54 +49,42 @@ export function initProjectileSystem(world: ECS) {
       }
     }
     
-    // Perform entity removal outside of query iteration
+    // Remove all entities marked for deletion
     for (const eid of entitiesToRemove) {
-      // Clean up mesh
+      // Get and remove the mesh
       const mesh = w.ctx.maps.mesh.get(eid);
       if (mesh) {
-        // Cast to Three.js Mesh to access geometry and material
-        const threeMesh = mesh as THREE.Mesh;
-        if (threeMesh.geometry) {
-          threeMesh.geometry.dispose();
-        }
+        w.ctx.three.scene.remove(mesh);
         
-        if (threeMesh.material) {
-          if (threeMesh.material instanceof THREE.Material) {
-            threeMesh.material.dispose();
-          } else if (Array.isArray(threeMesh.material)) {
-            for (const material of threeMesh.material) {
-              material.dispose();
+        // Properly cast to THREE.Mesh to access geometry and material
+        if (mesh instanceof THREE.Mesh) {
+          if (mesh.geometry) {
+            mesh.geometry.dispose();
+          }
+          
+          if (mesh.material) {
+            // Handle both single and array materials
+            if (Array.isArray(mesh.material)) {
+              mesh.material.forEach(material => {
+                if (material) material.dispose();
+              });
+            } else {
+              mesh.material.dispose();
             }
           }
         }
         
-        mesh.removeFromParent();
+        w.ctx.maps.mesh.delete(eid);
       }
       
-      // Clean up physics body
-      try {
-        const rb = w.ctx.maps.rb.get(eid);
-        if (rb) {
-          // Make sure we're not trying to remove a rigid body that's already gone
-          try {
-            // Check if the body is still valid
-            const _ = rb.handle;
-            // If we get here, it's safe to remove
-            w.ctx.physics.removeRigidBody(rb);
-          } catch (error) {
-            // Body is already invalid, just skip removal
-            console.warn("Skipping invalid rigid body removal", error);
-          }
-        }
-      } catch (error) {
-        console.warn("Error removing rigid body", error);
+      // Get and remove the rigid body
+      const rb = w.ctx.maps.rb.get(eid);
+      if (rb) {
+        w.ctx.physics.removeRigidBody(rb);
+        w.ctx.maps.rb.delete(eid);
       }
       
-      // Remove references
-      w.ctx.maps.mesh.delete(eid);
-      w.ctx.maps.rb.delete(eid);
-      
-      // Remove entity from ECS world
+      // Remove the entity
       removeEntity(w, eid);
     }
     
