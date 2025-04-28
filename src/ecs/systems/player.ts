@@ -24,6 +24,7 @@ const JUMP_BUFFER_MS = 200;
 const SHOOT_CD_MS    = 200;
 const BULLET_SPEED   = 40;
 const BULLET_TTL_MS  = 5000;
+const BULLET_SPAWN_DISTANCE = 1.5;
 
 const MOUSE_SENSITIVITY = 0.0035;
 
@@ -84,6 +85,8 @@ export function initPlayerSystem(world: ECS) {
   
   // Track the previous shoot state to detect start of shooting
   let prevShoot = false;
+  // Track the previous jump state to require releasing space before jumping again
+  let prevJump = false;
 
   /* system --------------------------------------------------------- */
   return (w: ECS) => {
@@ -116,7 +119,9 @@ export function initPlayerSystem(world: ECS) {
     }
     
     // Handle jump buffering - store jump request timing
-    if (input.jump && FPController.jumpRequested[pid] === 0) {
+    // Only allow a new jump request if space was released since last jump
+    const jumpPressed = input.jump && !prevJump;
+    if (jumpPressed && FPController.jumpRequested[pid] === 0) {
       FPController.jumpRequested[pid] = 1;
       FPController.lastJumpRequest[pid] = now;
     } else if (!input.jump) {
@@ -128,11 +133,14 @@ export function initPlayerSystem(world: ECS) {
                     now - FPController.lastJump[pid] > JUMP_CD_MS;
     
     // Execute jump if conditions met, including buffered jumps
-    if (canJump && (input.jump || (now - FPController.lastJumpRequest[pid] < JUMP_BUFFER_MS))) {
+    if (canJump && (jumpPressed || (now - FPController.lastJumpRequest[pid] < JUMP_BUFFER_MS))) {
       FPController.vertVel[pid] = JUMP_VEL;
       FPController.lastJump[pid] = now;
       FPController.jumpRequested[pid] = 0;
     }
+
+    // Store previous jump state for next frame
+    prevJump = input.jump;
 
     if (FPController.moveState[pid] !== GROUNDED) {
       FPController.vertVel[pid] = Math.max(FPController.vertVel[pid] - GRAVITY * w.time.dt, TERMINAL_FALL);
@@ -220,7 +228,7 @@ function spawnBullet(
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir).normalize();
   const spawn = new THREE.Vector3();
-  camera.getWorldPosition(spawn).addScaledVector(dir, 0.5);
+  camera.getWorldPosition(spawn).addScaledVector(dir, BULLET_SPAWN_DISTANCE);
   mesh.position.copy(spawn);
 
   w.ctx.three.scene.add(mesh);
