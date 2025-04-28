@@ -1,0 +1,810 @@
+<goal>
+ Is this a proper full ecs architecture that i can use as starting point for my AAA fps browser game?
+</goal>
+
+
+<context>
+    <codebase>
+Directory structure:
+└── /./
+    ├── index.html
+    ├── package.json
+    ├── src/
+    │   ├── ecs/
+    │   │   ├── components.ts
+    │   │   ├── scene.ts
+    │   │   ├── systems/
+    │   │   │   ├── input.ts
+    │   │   │   ├── physics.ts
+    │   │   │   ├── player.ts
+    │   │   │   ├── projectile.ts
+    │   │   │   └── renderSync.ts
+    │   │   └── world.ts
+    │   └── main.ts
+    ├── tsconfig.json
+    └── vite.config.ts
+
+================================================
+File: /index.html
+================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Rapier × Three × bitecs starter</title>
+  <style>html,body{margin:0;height:100%;overflow:hidden}</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
+
+
+================================================
+File: /package.json
+================================================
+{
+  "name": "rapier-three-bitecs-starter",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d": "^0.16.0",
+    "bitecs": "^0.3.40",
+    "three": "^0.176.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.158.0",
+    "typescript": "^5.2.2",
+    "vite": "^6.3.1",
+    "vite-plugin-top-level-await": "^1.5.0",
+    "vite-plugin-wasm": "^3.4.1"
+  }
+}
+
+
+================================================
+File: /src/ecs/components.ts
+================================================
+import { Types, defineComponent } from 'bitecs';
+
+/** World-space transform (quat-pos) */
+export const Transform = defineComponent({
+  x: Types.f32, y: Types.f32, z: Types.f32,
+  qx: Types.f32, qy: Types.f32, qz: Types.f32, qw: Types.f32
+});
+
+/** Linear velocity – used for projectiles */
+export const Velocity = defineComponent({ x: Types.f32, y: Types.f32, z: Types.f32 });
+
+/** TTL in milliseconds (bullets) */
+export const Lifespan = defineComponent({ ttl: Types.f32, born: Types.f32 });
+
+/** Tags */
+export const Player   = defineComponent();
+export const Projectile = defineComponent();
+export const CubeTag  = defineComponent();
+
+/** Foreign-object indirection – store handles in JS Maps */
+export const RigidBodyRef = defineComponent({ id: Types.ui32 });
+export const MeshRef      = defineComponent({ id: Types.ui32 });
+
+
+================================================
+File: /src/ecs/scene.ts
+================================================
+import * as THREE from 'three';
+import * as RAPIER from '@dimforge/rapier3d';
+import { addEntity, addComponent } from 'bitecs';
+import {
+  CubeTag, MeshRef, RigidBodyRef, Transform
+} from './components';
+import { ECS, ECSContext } from './world';
+
+/* -------------------------------------------------- */
+/* createContext : sets up Three + Rapier but DOES NOT
+   touch ECS.  This avoids the previous undefined world
+   problems.                                          */
+export async function createContext(canvas: HTMLCanvasElement): Promise<ECSContext> {
+  /* Rapier */
+  // Import Rapier properly
+  const rapier = RAPIER;
+  const physics = new rapier.World({ x: 0, y: -9.81, z: 0 });
+
+  /* Three renderer / scene / camera ---------------- */
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87CEEB);
+  
+  // Add fog for depth
+  scene.fog = new THREE.FogExp2(0x88BBFF, 0.0025);
+
+  /* camera */
+  const camera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+  );
+
+  /* Lights */
+  // Ambient light
+  scene.add(new THREE.AmbientLight(0xFFFFFF, 0.8));
+  
+  // Directional light with shadows
+  const dirLight = new THREE.DirectionalLight(0xFFFFFF, 1.0);
+  dirLight.position.set(5, 10, 7);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.width = 2048;
+  dirLight.shadow.mapSize.height = 2048;
+  dirLight.shadow.camera.near = 0.5;
+  dirLight.shadow.camera.far = 50;
+  dirLight.shadow.camera.left = -20;
+  dirLight.shadow.camera.right = 20;
+  dirLight.shadow.camera.top = 20;
+  dirLight.shadow.camera.bottom = -20;
+  scene.add(dirLight);
+
+  /* Sky */
+  const skyG = new THREE.SphereGeometry(400, 32, 15);
+  skyG.scale(-1, 1, 1);
+  scene.add(new THREE.Mesh(
+    skyG,
+    new THREE.MeshBasicMaterial({ color: 0x87CEEB, side: THREE.BackSide })
+  ));
+
+  /* Ground plane / collider */
+  const groundMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(200, 200).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({ 
+      color: 0x1a5f2a, 
+      roughness: 0.8,
+      metalness: 0.2
+    })
+  );
+  groundMesh.receiveShadow = true;
+  scene.add(groundMesh);
+
+  const groundBody = physics.createRigidBody(rapier.RigidBodyDesc.fixed());
+  physics.createCollider(rapier.ColliderDesc.cuboid(100, 0.1, 100), groundBody);
+
+  // Handle window resize
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  /* return context object */
+  return {
+    rapier,
+    physics,
+    three: { scene, camera, renderer },
+    maps: { mesh: new Map(), rb: new Map() }
+  };
+}
+
+/* -------------------------------------------------- */
+/* populateScene : may be called as soon as an ECS
+   world exists, to register cubes (or later models)  */
+export function populateScene(world: ECS, ctx: ECSContext): void {
+  const { rapier, physics, maps, three } = ctx;
+
+  const makeCube = (x: number, y: number, z: number, size: number = 1, color: number = Math.random() * 0xffffff) => {
+    // Create Three.js mesh
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(size, size, size),
+      new THREE.MeshStandardMaterial({ 
+        color,
+        roughness: 0.7,
+        metalness: 0.3
+      })
+    );
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.position.set(x, y, z);
+    three.scene.add(mesh);
+
+    // Create Rapier rigid body and collider
+    const rb = physics.createRigidBody(
+      rapier.RigidBodyDesc.dynamic()
+        .setTranslation(x, y, z)
+        .setCcdEnabled(true)
+    );
+    physics.createCollider(
+      rapier.ColliderDesc.cuboid(size/2 * 0.98, size/2 * 0.98, size/2 * 0.98)
+        .setRestitution(0.4)
+        .setFriction(0.5), 
+      rb
+    );
+
+    /* ECS entity for cube */
+    const eid = addEntity(world);
+    addComponent(world, CubeTag, eid);
+    addComponent(world, MeshRef, eid);
+    addComponent(world, RigidBodyRef, eid);
+    addComponent(world, Transform, eid);
+
+    maps.mesh.set(eid, mesh);
+    maps.rb.set(eid, rb);
+    RigidBodyRef.id[eid] = rb.handle;
+  };
+
+  /* stack of 6 × 6 × 6 cubes (like original) */
+  for (let y = 0; y < 6; ++y)
+    for (let x = 0; x < 6; ++x)
+      for (let z = 0; z < 6; ++z)
+        makeCube(x - 3, y + 0.5, z - 3);
+        
+  // Create additional random cubes around the scene
+  for (let i = 0; i < 20; i++) {
+    const position = {
+      x: (Math.random() - 0.5) * 20,
+      y: 10 + Math.random() * 10,
+      z: (Math.random() - 0.5) * 20
+    };
+    
+    // Random size between 0.5 and 2
+    const size = 0.5 + Math.random() * 1.5;
+    
+    // Random color
+    const color = Math.random() * 0xffffff;
+    
+    makeCube(position.x, position.y, position.z, size, color);
+  }
+}
+
+
+================================================
+File: /src/ecs/systems/input.ts
+================================================
+import { ECS } from '../world';
+
+export interface InputState {
+  fw: boolean; bk: boolean; lf: boolean; rt: boolean;
+  shoot: boolean; jump: boolean; pointerLocked: boolean;
+  dx: number; dy: number;
+}
+
+export function initInputSystem(world: ECS) {
+  const state: InputState = { 
+    fw: false, bk: false, lf: false, rt: false,
+    shoot: false, jump: false, pointerLocked: false,
+    dx: 0, dy: 0 
+  };
+  
+  const key = (code: string, v: boolean) => {
+    if (code==='KeyW'||code==='ArrowUp')   state.fw = v;
+    if (code==='KeyS'||code==='ArrowDown') state.bk = v;
+    if (code==='KeyA'||code==='ArrowLeft') state.lf = v;
+    if (code==='KeyD'||code==='ArrowRight')state.rt = v;
+    if (code==='Space')                    state.jump = v;
+  };
+  addEventListener('keydown', e=>key(e.code,true));
+  addEventListener('keyup',   e=>key(e.code,false));
+
+  const canvas = document.getElementById('c')!;
+  canvas.addEventListener('click', () => canvas.requestPointerLock());
+  document.addEventListener('pointerlockchange', () => state.pointerLocked = !!document.pointerLockElement);
+  addEventListener('mousemove', e=>{
+    if(!state.pointerLocked) return;
+    state.dx += e.movementX; state.dy += e.movementY;
+  });
+  addEventListener('mousedown', e=>{ if(e.button===0) state.shoot = true; });
+  addEventListener('mouseup',   e=>{ if(e.button===0) state.shoot = false; });
+
+  /* system */
+  return (w: ECS) => { w.input = state; return w; };
+}
+
+
+================================================
+File: /src/ecs/systems/physics.ts
+================================================
+import { defineQuery, exitQuery } from 'bitecs';
+import { RigidBodyRef } from '../components';
+import { ECS } from '../world';
+
+export function initPhysicsSystem(world: ECS) {
+  const rbq = defineQuery([RigidBodyRef]);
+  const exit = exitQuery(rbq);
+
+  /* cleanup on entity removal */
+  return (w: ECS) => {
+    w.ctx.physics.step();
+
+    /* purge removed RigidBodies */
+    for (const eid of exit(w)) {
+      const rb = w.ctx.maps.rb.get(eid);
+      if (rb) {
+        w.ctx.physics.removeRigidBody(rb);
+        w.ctx.maps.rb.delete(eid);
+      }
+    }
+    return w;
+  };
+}
+
+
+================================================
+File: /src/ecs/systems/player.ts
+================================================
+import { addComponent, addEntity } from 'bitecs';
+import * as THREE from 'three';
+import {
+  MeshRef, Player, RigidBodyRef, Transform,
+  Projectile, Lifespan, Velocity
+} from '../components';
+import { ECS } from '../world';
+import { InputState } from './input.js';
+
+/* Movement states */
+enum MovementState {
+  GROUNDED,
+  JUMPING,
+  FALLING,
+  SLIDING
+}
+
+/* ───────── initialise player entity & system ───── */
+export function initPlayerSystem(world: ECS) {
+  const { rapier, physics, three, maps } = world.ctx;
+
+  /* ███  ECS entity  ███ */
+  const pid = addEntity(world);
+  addComponent(world, Player, pid);
+  addComponent(world, Transform, pid);
+  addComponent(world, MeshRef, pid);
+  addComponent(world, RigidBodyRef, pid);
+
+  /* Three object that carries the camera */
+  const holder = new THREE.Object3D();
+  holder.position.set(0, 3, 6); // Start a bit higher
+  holder.add(three.camera);
+  three.scene.add(holder);
+  maps.mesh.set(pid, holder);
+
+  /* Rapier kinematic controller stuff */
+  const rb = physics.createRigidBody(
+    rapier.RigidBodyDesc.kinematicPositionBased()
+      .setTranslation(holder.position.x, holder.position.y, holder.position.z)
+      .setCcdEnabled(true)
+  );
+  const collider = physics.createCollider(
+    rapier.ColliderDesc.capsule(0.9, 0.3).setFriction(0.2),
+    rb
+  );
+  
+  // Create character controller
+  const kcc = physics.createCharacterController(0.01); // Small offset for better collision
+  kcc.setApplyImpulsesToDynamicBodies(true);
+  kcc.setUp({ x: 0, y: 1, z: 0 });
+  kcc.enableAutostep(0.5, 0.3, true);
+  kcc.enableSnapToGround(0.3);
+  kcc.setMaxSlopeClimbAngle(0.8); // ~45 degrees
+  kcc.setMinSlopeSlideAngle(0.6);
+
+  // Add to maps for tracking
+  maps.rb.set(pid, rb);
+  RigidBodyRef.id[pid] = rb.handle;
+
+  /* view state */
+  let pitch = 0;
+  const MOVE_SPEED = 5.0;
+  const dir = new THREE.Vector3();
+  const horizontalVelocity = new THREE.Vector2(0, 0);
+  let verticalVelocity = 0;
+  let movementState = MovementState.GROUNDED;
+  let canJump = true;
+  let jumpRequested = false;
+  let lastJumpTime = 0;
+  let lastGroundedTime = 0;
+  
+  // Movement parameters
+  const JUMP_VELOCITY = 10.0;
+  const JUMP_COOLDOWN = 300; // ms
+  const COYOTE_TIME = 150; // ms
+  const AIR_CONTROL = 0.7;
+  const GRAVITY_FORCE = 20.0;
+  const GROUND_ACCELERATION = 10.0;
+  const AIR_ACCELERATION = 5.0;
+
+  /* ───────── the actual system function ─────────── */
+  return (w: ECS) => {
+    const input = w.input;
+    if (!input) return w;
+
+    /* camera rotation */
+    if (input.pointerLocked) {
+      holder.rotation.y -= input.dx * 0.002;
+      pitch = THREE.MathUtils.clamp(pitch - input.dy * 0.002, -Math.PI / 2, Math.PI / 2);
+      three.camera.rotation.x = pitch;
+    }
+    input.dx = input.dy = 0; // reset deltas
+    
+    // Check if movement state should be updated
+    const now = Date.now();
+    const isGrounded = kcc.computedGrounded();
+    
+    // Update grounded time for coyote time
+    if (isGrounded) {
+      lastGroundedTime = now;
+    }
+    
+    // Update movement state
+    if (isGrounded) {
+      movementState = MovementState.GROUNDED;
+    } else {
+      if (verticalVelocity > 0) {
+        movementState = MovementState.JUMPING;
+      } else {
+        movementState = MovementState.FALLING;
+      }
+    }
+    
+    // Update jump ability with coyote time
+    canJump = isGrounded || (now - lastGroundedTime < COYOTE_TIME);
+    
+    // Handle jump input
+    if (input.jump && canJump && now - lastJumpTime > JUMP_COOLDOWN) {
+      verticalVelocity = JUMP_VELOCITY;
+      jumpRequested = false;
+      lastJumpTime = now;
+      movementState = MovementState.JUMPING;
+      canJump = false;
+    }
+    
+    // Apply gravity based on movement state
+    if (movementState === MovementState.JUMPING || 
+        movementState === MovementState.FALLING) {
+      verticalVelocity -= GRAVITY_FORCE * w.time.dt;
+    } else {
+      // Gradually reduce vertical velocity when grounded
+      verticalVelocity *= 0.8;
+      if (Math.abs(verticalVelocity) < 0.1) {
+        verticalVelocity = 0;
+      }
+    }
+    
+    // Clamp maximum falling speed
+    if (verticalVelocity < -20) {
+      verticalVelocity = -20;
+    }
+
+    /* movement vector in world space */
+    dir.set(
+      (input.rt ? 1 : 0) - (input.lf ? 1 : 0),
+      0,
+      (input.bk ? 1 : 0) - (input.fw ? 1 : 0)
+    );
+    
+    if (dir.lengthSq() > 0) dir.normalize();
+    
+    // Apply rotation to direction
+    dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), holder.rotation.y);
+    
+    // Calculate move factor based on state
+    const moveFactor = (movementState === MovementState.JUMPING || 
+                        movementState === MovementState.FALLING) ? 
+                        AIR_CONTROL : 1.0;
+    
+    // Set horizontal velocity based on input direction
+    horizontalVelocity.x = dir.x * MOVE_SPEED * moveFactor;
+    horizontalVelocity.y = dir.z * MOVE_SPEED * moveFactor;
+
+    // Calculate final movement vector with delta time
+    const movementVector = {
+      x: horizontalVelocity.x * w.time.dt,
+      y: verticalVelocity * w.time.dt,
+      z: horizontalVelocity.y * w.time.dt
+    };
+    
+    // Use the character controller to compute correct movement
+    kcc.computeColliderMovement(
+      collider,
+      movementVector
+    );
+    
+    // Get corrected movement from character controller
+    const correctedMovement = kcc.computedMovement();
+    
+    // Check for head collision
+    if (verticalVelocity > 0 && correctedMovement.y < movementVector.y * 0.9) {
+      // Hit ceiling or obstacle above, zero out upward velocity
+      verticalVelocity = 0;
+    }
+    
+    // Apply the movement to the rigid body
+    const currentPos = rb.translation();
+    const newPos = {
+      x: currentPos.x + correctedMovement.x,
+      y: currentPos.y + correctedMovement.y,
+      z: currentPos.z + correctedMovement.z
+    };
+    
+    // Update rigid body position
+    rb.setNextKinematicTranslation(newPos);
+    
+    /* shooting */
+    if (input.shoot) spawnBullet(w, holder, three.camera, rapier);
+
+    return w;
+  };
+}
+
+/* ───────── spawnBullet helper ───────────────────── */
+function spawnBullet(
+  w: ECS,
+  holder: THREE.Object3D,
+  camera: THREE.Camera,
+  R: typeof import('@dimforge/rapier3d')
+) {
+  const { physics, maps } = w.ctx;
+
+  /* entity */
+  const bid = addEntity(w);
+  addComponent(w, Projectile, bid);
+  addComponent(w, Lifespan, bid);
+  addComponent(w, RigidBodyRef, bid);
+  addComponent(w, MeshRef, bid);
+  addComponent(w, Velocity, bid);
+
+  Lifespan.ttl[bid] = 5000;
+  Lifespan.born[bid] = performance.now();
+
+  /* Three mesh */
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 8, 8),
+    new THREE.MeshStandardMaterial({ 
+      color: 0xff9900,
+      roughness: 0.3,
+      metalness: 0.7,
+      emissive: 0xff9900,
+      emissiveIntensity: 0.5
+    })
+  );
+  mesh.castShadow = true;
+  camera.getWorldPosition(mesh.position);
+  w.ctx.three.scene.add(mesh);
+  maps.mesh.set(bid, mesh);
+
+  /* Rapier rigid-body */
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir).normalize();
+  const speed = 40;
+
+  // Store velocity in component
+  Velocity.x[bid] = dir.x * speed;
+  Velocity.y[bid] = dir.y * speed;
+  Velocity.z[bid] = dir.z * speed;
+
+  // Create rigid body with velocity
+  const rb = physics.createRigidBody(
+    R.RigidBodyDesc.dynamic()
+      .setTranslation(mesh.position.x, mesh.position.y, mesh.position.z)
+      .setLinvel(dir.x * speed, dir.y * speed, dir.z * speed)
+      .setCcdEnabled(true)
+  );
+  physics.createCollider(
+    R.ColliderDesc.ball(0.1)
+      .setRestitution(0.6)
+      .setFriction(0.1), 
+    rb
+  );
+
+  maps.rb.set(bid, rb);
+  RigidBodyRef.id[bid] = rb.handle;
+}
+
+
+================================================
+File: /src/ecs/systems/projectile.ts
+================================================
+import { defineQuery, removeEntity } from 'bitecs';
+import { Lifespan, Projectile, RigidBodyRef } from '../components';
+import { ECS } from '../world';
+import * as THREE from 'three';
+
+export function initProjectileSystem(world: ECS) {
+  const q = defineQuery([Projectile, Lifespan]);
+
+  return (w: ECS) => {
+    const now = performance.now();
+    for (const eid of q(w)) {
+      if (now - Lifespan.born[eid] > Lifespan.ttl[eid]) {
+        /* despawn */
+        const mesh = w.ctx.maps.mesh.get(eid) as THREE.Mesh;
+        if (mesh) { mesh.geometry.dispose(); (mesh.material as THREE.Material).dispose(); mesh.removeFromParent(); }
+        const rb = w.ctx.maps.rb.get(eid);
+        if (rb) w.ctx.physics.removeRigidBody(rb);
+        w.ctx.maps.mesh.delete(eid);
+        w.ctx.maps.rb.delete(eid);
+        removeEntity(w, eid);
+      }
+    }
+    return w;
+  };
+}
+
+
+================================================
+File: /src/ecs/systems/renderSync.ts
+================================================
+import { defineQuery } from 'bitecs';
+import { MeshRef, RigidBodyRef, Transform } from '../components';
+import { ECS } from '../world';
+import { Quaternion, Vector3 } from 'three';
+
+export function initRenderSyncSystem(world: ECS) {
+  const q = defineQuery([Transform, MeshRef]);
+
+  const pos = new Vector3();
+  const quat = new Quaternion();
+
+  return (w: ECS) => {
+    /* sync mesh → rigidBody OR rigidBody → mesh */
+    for (const eid of q(w)) {
+      const mesh = w.ctx.maps.mesh.get(eid)!;
+      const rb   = w.ctx.maps.rb.get(eid);
+
+      if (rb) { // physics drives visual
+        const p = rb.translation();
+        const r = rb.rotation();
+        mesh.position.set(p.x,p.y,p.z);
+        mesh.quaternion.set(r.x,r.y,r.z,r.w);
+      } else {  // kinematic visual drives physics (player)
+        mesh.getWorldPosition(pos);
+        mesh.getWorldQuaternion(quat);
+
+        Transform.x[eid] = pos.x;
+        Transform.y[eid] = pos.y;
+        Transform.z[eid] = pos.z;
+        Transform.qx[eid]= quat.x;
+        Transform.qy[eid]= quat.y;
+        Transform.qz[eid]= quat.z;
+        Transform.qw[eid]= quat.w;
+      }
+    }
+    return w;
+  };
+}
+
+
+================================================
+File: /src/ecs/world.ts
+================================================
+import { createWorld, pipe } from 'bitecs';
+import { initInputSystem, InputState } from './systems/input.js';
+import { initPlayerSystem }    from './systems/player.js';
+import { initProjectileSystem }from './systems/projectile.js';
+import { initPhysicsSystem }   from './systems/physics.js';
+import { initRenderSyncSystem }from './systems/renderSync.js';
+
+/** Create ECS world + pipeline */
+export function createECS(ctx: ECSContext) {
+  const world = createWorld() as ECS;
+  world.ctx  = ctx;
+  world.time = { dt: 0, then: performance.now() };
+
+  const pipeline = pipe(
+    initInputSystem(world),
+    initPlayerSystem(world),
+    initProjectileSystem(world),
+    initPhysicsSystem(world),
+    initRenderSyncSystem(world)
+  );
+
+  return { world, pipeline };
+}
+
+/* -------------------------------------------------- */
+/* Types shared with scene & systems                  */
+export type ECS = ReturnType<typeof createWorld> & {
+  ctx:  ECSContext;
+  time: { dt: number; then: number };
+  input?: InputState;
+};
+
+export interface ECSContext {
+  rapier:   typeof import('@dimforge/rapier3d');
+  physics:  import('@dimforge/rapier3d').World;
+  three: {
+    scene:    THREE.Scene;
+    camera:   THREE.PerspectiveCamera;
+    renderer: THREE.WebGLRenderer;
+  };
+  maps: {
+    mesh: Map<number, THREE.Object3D>;
+    rb:   Map<number, import('@dimforge/rapier3d').RigidBody>;
+  };
+}
+
+
+================================================
+File: /src/main.ts
+================================================
+import * as THREE from 'three';
+import * as RAPIER from '@dimforge/rapier3d';
+import { createWorld, pipe } from 'bitecs';
+import { createContext, populateScene } from './ecs/scene';
+import { createECS } from './ecs/world';
+
+/* canvas declared in /index.html */
+const canvas = document.getElementById('c') as HTMLCanvasElement;
+
+(async () => {
+  /* bootstrap Three + Rapier context (physics world still empty) */
+  const ctx = await createContext(canvas);
+
+  /* create ECS world & system pipeline */
+  const { world, pipeline } = createECS(ctx);
+
+  /* now that ECS exists, spawn cubes & any other scene content */
+  populateScene(world, ctx);
+
+  /* MAIN LOOP -------------------------------------------------- */
+  const raf = (t: number) => {
+    // Calculate delta time in seconds
+    world.time.dt = (t - world.time.then) * 0.001;
+    world.time.then = t;
+
+    // Run all systems
+    pipeline(world);
+    
+    // Render the scene
+    ctx.three.renderer.render(ctx.three.scene, ctx.three.camera);
+    
+    // Request next frame
+    requestAnimationFrame(raf);
+  };
+  requestAnimationFrame(raf);
+})();
+
+
+================================================
+File: /tsconfig.json
+================================================
+{
+    "compilerOptions": {
+      "target": "ES2020",
+      "module": "ESNext",
+      "lib": ["ES2020", "DOM"],
+      "moduleResolution": "Bundler",
+      "strict": true,
+      "noImplicitReturns": true,
+      "noUnusedLocals": true,
+      "noUnusedParameters": true,
+      "skipLibCheck": true,
+      "allowImportingTsExtensions": true,
+      "noEmit": true,
+      "types": ["vite/client"]
+    },
+    "include": ["src"]
+  }
+  
+
+================================================
+File: /vite.config.ts
+================================================
+import { defineConfig } from 'vite';
+import wasm from 'vite-plugin-wasm';
+import topLevelAwait from 'vite-plugin-top-level-await';
+
+export default defineConfig({
+  plugins: [wasm(), topLevelAwait()],
+  build: { target: 'esnext' },
+  server: { host: true }
+});
+    </codebase>
+</context>
