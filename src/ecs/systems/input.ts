@@ -1,3 +1,5 @@
+import { addComponent, defineQuery, enterQuery, hasComponent, addEntity } from 'bitecs';
+import { DebugVis } from '../components';
 import { ECS } from '../world';
 
 export interface InputState {
@@ -6,6 +8,7 @@ export interface InputState {
   shoot: boolean; jump: boolean;
   pointerLocked: boolean;
   dx: number; dy: number;
+  debugActive: boolean;
 }
 
 export function initInputSystem(world: ECS) {
@@ -14,8 +17,17 @@ export function initInputSystem(world: ECS) {
     sprint: false,
     shoot: false, jump: false,
     pointerLocked: false,
-    dx: 0, dy: 0
+    dx: 0, dy: 0,
+    debugActive: false
   };
+  
+  // Keep track of whether V was pressed last frame
+  let vWasPressed = false;
+  
+  // Create a singleton debug entity and add the component to it
+  const debugId = addEntity(world); // Create a new entity, don't assume ID 0
+  addComponent(world, DebugVis, debugId);
+  DebugVis.active[debugId] = 0; // 0 = off, 1 = on
 
   /* keyboard ------------------------------------------------------- */
   const key = (code: string, v: boolean) => {
@@ -25,6 +37,19 @@ export function initInputSystem(world: ECS) {
     if (code === 'KeyD' || code === 'ArrowRight') state.rt     = v;
     if (code === 'Space')                         state.jump   = v;
     if (code === 'ShiftLeft' || code === 'ShiftRight') state.sprint = v;
+    
+    // Handle V key press for debug visualization toggle
+    if (code === 'KeyV') {
+      // Toggle on key down only
+      if (v && !vWasPressed) {
+        // Toggle debug state
+        const newState = DebugVis.active[debugId] === 0 ? 1 : 0;
+        DebugVis.active[debugId] = newState;
+        state.debugActive = newState === 1;
+        console.log(`Debug visualization: ${state.debugActive ? 'ON' : 'OFF'}`);
+      }
+      vWasPressed = v;
+    }
   };
   addEventListener('keydown', e => key(e.code, true));
   addEventListener('keyup',   e => key(e.code, false));
@@ -46,5 +71,9 @@ export function initInputSystem(world: ECS) {
   addEventListener('mousedown', e => { if (e.button === 0) state.shoot = true; });
   addEventListener('mouseup',   e => { if (e.button === 0) state.shoot = false; });
 
-  return (w: ECS) => { w.input = state; return w; };
+  return (w: ECS) => { 
+    // Set the input state on the world
+    w.input = state;
+    return w;
+  };
 }

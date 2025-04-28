@@ -1,9 +1,11 @@
 import { createWorld, pipe } from 'bitecs';
-import { initInputSystem, InputState } from './systems/input.js';
-import { initPlayerSystem }    from './systems/player.js';
-import { initProjectileSystem }from './systems/projectile.js';
-import { initPhysicsSystem }   from './systems/physics.js';
-import { initRenderSyncSystem }from './systems/renderSync.js';
+import { initInputSystem, InputState } from './systems/input.ts';
+import { initPlayerSystem }    from './systems/player.ts';
+import { initProjectileSystem }from './systems/projectile.ts';
+import { initPhysicsSystem }   from './systems/physics.ts';
+import { initRenderSyncSystem }from './systems/renderSync.ts';
+import { initDebugVisSystem }  from './systems/debugVis.ts';
+import { initCollisionSystem } from './systems/collision.ts';
 
 /** Create ECS world + pipeline */
 export function createECS(ctx: ECSContext) {
@@ -14,8 +16,10 @@ export function createECS(ctx: ECSContext) {
   const pipeline = pipe(
     initInputSystem(world),
     initPlayerSystem(world),
+    initCollisionSystem(world),  // Process collisions before projectiles
     initProjectileSystem(world),
     initPhysicsSystem(world),
+    initDebugVisSystem(world),   // Debug visualization after physics update
     initRenderSyncSystem(world)
   );
 

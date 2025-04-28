@@ -1,11 +1,11 @@
 /**********************************************************************
  * player.ts – first-person controller (movement + shooting)
  *********************************************************************/
-import { addComponent, addEntity } from 'bitecs';
+import { addComponent, addEntity, defineQuery } from 'bitecs';
 import * as THREE from 'three';
 import {
   MeshRef, Player, RigidBodyRef, Transform,
-  Projectile, Lifespan, Velocity
+  Projectile, Lifespan, Velocity, FPController
 } from '../components';
 import { ECS } from '../world';
 import { InputState } from './input.js';
@@ -14,17 +14,23 @@ import { InputState } from './input.js';
 const WALK_SPEED     = 8;
 const SPRINT_FACTOR  = 1.8;
 const AIR_CONTROL    = 0.7;
-const JUMP_VEL       = 10;
+const JUMP_VEL       = 14;
 const GRAVITY        = 20;
 const TERMINAL_FALL  = -20;
 
 const JUMP_CD_MS     = 300;
 const COYOTE_MS      = 150;
+const JUMP_BUFFER_MS = 200;
 const SHOOT_CD_MS    = 200;
 const BULLET_SPEED   = 40;
 const BULLET_TTL_MS  = 5000;
 
-enum MoveState { GROUNDED, JUMPING, FALLING }
+const MOUSE_SENSITIVITY = 0.0035;
+
+// Movement state enum values
+const GROUNDED = 0;
+const JUMPING = 1;
+const FALLING = 2;
 
 /* ------------------------------------------------------------------ */
 export function initPlayerSystem(world: ECS) {
@@ -36,6 +42,17 @@ export function initPlayerSystem(world: ECS) {
   addComponent(world, Transform,    pid);
   addComponent(world, MeshRef,      pid);
   addComponent(world, RigidBodyRef, pid);
+  addComponent(world, FPController, pid);
+  
+  // Initialize controller state
+  FPController.pitch[pid] = 0;
+  FPController.vertVel[pid] = 0;
+  FPController.moveState[pid] = GROUNDED;
+  FPController.lastGrounded[pid] = performance.now();
+  FPController.lastJump[pid] = 0;
+  FPController.lastShot[pid] = 0;
+  FPController.jumpRequested[pid] = 0;
+  FPController.lastJumpRequest[pid] = 0;
 
   const holder = new THREE.Object3D();
   holder.position.set(0, 3, 6);
@@ -62,15 +79,11 @@ export function initPlayerSystem(world: ECS) {
   maps.rb.set(pid, rb);
   RigidBodyRef.id[pid] = rb.handle;
 
-  /* runtime state -------------------------------------------------- */
-  let pitch = 0;
-  let vertVel = 0;
-  let moveState: MoveState = MoveState.GROUNDED;
-  let lastGrounded = 0, lastJump = 0, lastShot = 0;
-  let prevShoot = false;
-
   const dir = new THREE.Vector3();
   const horiz = new THREE.Vector2();
+  
+  // Track the previous shoot state to detect start of shooting
+  let prevShoot = false;
 
   /* system --------------------------------------------------------- */
   return (w: ECS) => {
@@ -79,35 +92,53 @@ export function initPlayerSystem(world: ECS) {
 
     /* mouse-look ---------------------------------------------------- */
     if (input.pointerLocked) {
-      holder.rotation.y = (holder.rotation.y - input.dx * 0.002) % (Math.PI * 2);
+      holder.rotation.y = (holder.rotation.y - input.dx * MOUSE_SENSITIVITY) % (Math.PI * 2);
       if (holder.rotation.y < 0) holder.rotation.y += Math.PI * 2;
 
-      pitch = THREE.MathUtils.clamp(pitch - input.dy * 0.002, -Math.PI / 2, Math.PI / 2);
-      three.camera.rotation.x = pitch;
+      FPController.pitch[pid] = THREE.MathUtils.clamp(
+        FPController.pitch[pid] - input.dy * MOUSE_SENSITIVITY, 
+        -Math.PI / 2, 
+        Math.PI / 2
+      );
+      three.camera.rotation.x = FPController.pitch[pid];
     }
     input.dx = input.dy = 0;
 
     /* movement state + gravity ------------------------------------- */
     const now = performance.now();
     const grounded = kcc.computedGrounded();
-    if (grounded) lastGrounded = now;
+    if (grounded) FPController.lastGrounded[pid] = now;
 
-    moveState =
-      grounded ? MoveState.GROUNDED :
-      (vertVel > 0 ? MoveState.JUMPING : MoveState.FALLING);
-
-    if (input.jump &&
-        (grounded || now - lastGrounded < COYOTE_MS) &&
-        now - lastJump > JUMP_CD_MS) {
-      vertVel = JUMP_VEL;
-      lastJump = now;
+    if (grounded) {
+      FPController.moveState[pid] = GROUNDED;
+    } else {
+      FPController.moveState[pid] = FPController.vertVel[pid] > 0 ? JUMPING : FALLING;
+    }
+    
+    // Handle jump buffering - store jump request timing
+    if (input.jump && FPController.jumpRequested[pid] === 0) {
+      FPController.jumpRequested[pid] = 1;
+      FPController.lastJumpRequest[pid] = now;
+    } else if (!input.jump) {
+      FPController.jumpRequested[pid] = 0;
     }
 
-    if (moveState !== MoveState.GROUNDED) {
-      vertVel = Math.max(vertVel - GRAVITY * w.time.dt, TERMINAL_FALL);
+    // Check if we can jump with either direct input or buffered input
+    const canJump = (grounded || now - FPController.lastGrounded[pid] < COYOTE_MS) && 
+                    now - FPController.lastJump[pid] > JUMP_CD_MS;
+    
+    // Execute jump if conditions met, including buffered jumps
+    if (canJump && (input.jump || (now - FPController.lastJumpRequest[pid] < JUMP_BUFFER_MS))) {
+      FPController.vertVel[pid] = JUMP_VEL;
+      FPController.lastJump[pid] = now;
+      FPController.jumpRequested[pid] = 0;
+    }
+
+    if (FPController.moveState[pid] !== GROUNDED) {
+      FPController.vertVel[pid] = Math.max(FPController.vertVel[pid] - GRAVITY * w.time.dt, TERMINAL_FALL);
     } else {
-      vertVel *= 0.8;
-      if (Math.abs(vertVel) < 0.1) vertVel = 0;
+      FPController.vertVel[pid] *= 0.8;
+      if (Math.abs(FPController.vertVel[pid]) < 0.1) FPController.vertVel[pid] = 0;
     }
 
     /* directional input -------------------------------------------- */
@@ -120,7 +151,7 @@ export function initPlayerSystem(world: ECS) {
     dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), holder.rotation.y);
 
     const speed = WALK_SPEED *
-                  (moveState === MoveState.GROUNDED ? 1 : AIR_CONTROL) *
+                  (FPController.moveState[pid] === GROUNDED ? 1 : AIR_CONTROL) *
                   (input.sprint ? SPRINT_FACTOR : 1);
 
     horiz.set(dir.x * speed, dir.z * speed);
@@ -128,13 +159,15 @@ export function initPlayerSystem(world: ECS) {
     /* KCC integration ---------------------------------------------- */
     const requested = {
       x: horiz.x * w.time.dt,
-      y: vertVel  * w.time.dt,
+      y: FPController.vertVel[pid] * w.time.dt,
       z: horiz.y * w.time.dt
     };
     kcc.computeColliderMovement(collider, requested);
     const actual = kcc.computedMovement();
 
-    if (vertVel > 0 && actual.y < requested.y * 0.9) vertVel = 0; // head hit
+    if (FPController.vertVel[pid] > 0 && actual.y < requested.y * 0.9) {
+      FPController.vertVel[pid] = 0; // head hit
+    }
 
     const p = rb.translation();
     rb.setNextKinematicTranslation({
@@ -146,9 +179,9 @@ export function initPlayerSystem(world: ECS) {
 
     /* shooting ------------------------------------------------------ */
     const shootStart = input.shoot && !prevShoot;
-    if (shootStart && now - lastShot > SHOOT_CD_MS) {
+    if (shootStart && now - FPController.lastShot[pid] > SHOOT_CD_MS) {
       spawnBullet(w, three.camera, rapier);
-      lastShot = now;
+      FPController.lastShot[pid] = now;
     }
     prevShoot = input.shoot;
 

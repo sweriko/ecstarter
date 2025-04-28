@@ -3,6 +3,7 @@ import * as RAPIER from '@dimforge/rapier3d';
 import { createWorld, pipe } from 'bitecs';
 import { createContext, populateScene } from './ecs/scene';
 import { createECS } from './ecs/world';
+import Stats from 'three/examples/jsm/libs/stats.module.js';
 
 /* canvas declared in /index.html */
 const canvas = document.getElementById('c') as HTMLCanvasElement;
@@ -16,9 +17,20 @@ const canvas = document.getElementById('c') as HTMLCanvasElement;
 
   /* now that ECS exists, spawn cubes & any other scene content */
   populateScene(world, ctx);
+  
+  /* Setup Stats.js performance monitor */
+  const stats = new Stats();
+  stats.showPanel(0); // 0: fps, 1: ms, 2: mb, 3+: custom
+  stats.dom.style.position = 'absolute';
+  stats.dom.style.left = '0px';
+  stats.dom.style.top = '0px';
+  document.body.appendChild(stats.dom);
 
   /* MAIN LOOP -------------------------------------------------- */
   const raf = (t: number) => {
+    // Begin stats measurement
+    stats.begin();
+    
     // Calculate delta time in seconds
     world.time.dt = (t - world.time.then) * 0.001;
     world.time.then = t;
@@ -28,6 +40,9 @@ const canvas = document.getElementById('c') as HTMLCanvasElement;
     
     // Render the scene
     ctx.three.renderer.render(ctx.three.scene, ctx.three.camera);
+    
+    // End stats measurement
+    stats.end();
     
     // Request next frame
     requestAnimationFrame(raf);
