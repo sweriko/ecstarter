@@ -1,18 +1,30 @@
-import { defineQuery, addComponent, addEntity } from 'bitecs';
+import { defineQuery, addComponent, addEntity, hasComponent } from 'bitecs';
 import { Projectile, CubeTag, RigidBodyRef, CollisionEvent } from '../components';
 import { ECS } from '../world';
-import * as THREE from 'three';
+import { vec3Pool, createEntityPairKey } from '../utils/mathUtils';
+import { PhysicsConfig } from '../config';
 
 export function initCollisionSystem(world: ECS) {
   const projectileQuery = defineQuery([Projectile, RigidBodyRef]);
   const cubeQuery = defineQuery([CubeTag, RigidBodyRef]);
   
-  // Impact force when bullet hits cube
-  const IMPACT_FORCE = 20.0;
+  // Last processed collision time to avoid duplicates
+  const processedCollisions = new Map<bigint, number>();
   
-  // Last processed collision time to avoid duplicates 
-  // Still useful for physics-based collisions to avoid duplicate events
-  const processedCollisions = new Map<string, number>();
+  // Cache of rigid body handles to entity IDs
+  // Initialize entity handle mapping
+  if (!world.ctx.entityHandleMap) {
+    world.ctx.entityHandleMap = new Map<number, number>();
+  }
+  
+  // Helper to mark entities for deletion outside the hot collision loop
+  function markEntityForDeletion(eid: number) {
+    const mesh = world.ctx.maps.mesh.get(eid);
+    if (mesh) {
+      if (!mesh.userData) mesh.userData = {};
+      mesh.userData.markedForDeletion = true;
+    }
+  }
   
   return (w: ECS) => {
     const now = performance.now();
@@ -29,25 +41,22 @@ export function initCollisionSystem(world: ECS) {
       return w;
     }
     
-    // Build lookup maps for entity IDs by rigid body handle
-    const rbHandleToEntityMap = new Map();
-    const entityTypeMap = new Map();
+    // Cache query results once per tick
+    const projectiles = projectileQuery(w);
+    const cubes = cubeQuery(w);
     
-    // Get all projectiles and their rigidbody handles
-    for (const eid of projectileQuery(w)) {
+    // Update entity handle map for any new entities
+    for (const eid of projectiles) {
       const rb = w.ctx.maps.rb.get(eid);
-      if (rb) {
-        rbHandleToEntityMap.set(rb.handle, eid);
-        entityTypeMap.set(eid, 'projectile');
+      if (rb && !w.ctx.entityHandleMap!.has(rb.handle)) {
+        w.ctx.entityHandleMap!.set(rb.handle, eid);
       }
     }
     
-    // Get all cubes and their rigidbody handles
-    for (const eid of cubeQuery(w)) {
+    for (const eid of cubes) {
       const rb = w.ctx.maps.rb.get(eid);
-      if (rb) {
-        rbHandleToEntityMap.set(rb.handle, eid);
-        entityTypeMap.set(eid, 'cube');
+      if (rb && !w.ctx.entityHandleMap!.has(rb.handle)) {
+        w.ctx.entityHandleMap!.set(rb.handle, eid);
       }
     }
     
@@ -57,27 +66,28 @@ export function initCollisionSystem(world: ECS) {
       if (!started) return;
       
       // Get entity IDs from rigid body handles
-      const entity1 = rbHandleToEntityMap.get(handle1);
-      const entity2 = rbHandleToEntityMap.get(handle2);
+      const entity1 = w.ctx.entityHandleMap!.get(handle1);
+      const entity2 = w.ctx.entityHandleMap!.get(handle2);
       
       if (!entity1 || !entity2) return;
       
-      // Check if one is a projectile and one is a cube
-      const entity1Type = entityTypeMap.get(entity1);
-      const entity2Type = entityTypeMap.get(entity2);
+      // Use hasComponent for O(1) lookups instead of array.includes()
+      const isProjectile1 = hasComponent(w, Projectile, entity1);
+      const isProjectile2 = hasComponent(w, Projectile, entity2);
+      const isCube1 = hasComponent(w, CubeTag, entity1);
+      const isCube2 = hasComponent(w, CubeTag, entity2);
       
       // Skip if not a projectile-cube collision
-      if (!((entity1Type === 'projectile' && entity2Type === 'cube') || 
-           (entity1Type === 'cube' && entity2Type === 'projectile'))) {
+      if (!((isProjectile1 && isCube2) || (isProjectile2 && isCube1))) {
         return;
       }
       
       // Determine which is which
-      const projectileEid = entity1Type === 'projectile' ? entity1 : entity2;
-      const cubeEid = entity1Type === 'cube' ? entity1 : entity2;
+      const projectileEid = isProjectile1 ? entity1 : entity2;
+      const cubeEid = isCube1 ? entity1 : entity2;
       
-      // Create a unique ID for this collision
-      const collisionId = `${projectileEid}-${cubeEid}-${Math.floor(now / 100)}`;
+      // Create a unique ID for this collision using BigInt
+      const collisionId = createEntityPairKey(projectileEid, cubeEid);
       
       // Skip if we've already processed this collision recently
       if (processedCollisions.has(collisionId)) return;
@@ -96,7 +106,8 @@ export function initCollisionSystem(world: ECS) {
       const cubePos = cubeRB.translation();
       
       // Direction vector from bullet to cube center (where to push the cube)
-      const impactDir = new THREE.Vector3(
+      // Use pooled vector
+      const impactDir = vec3Pool.get().set(
         cubePos.x - bulletPos.x,
         cubePos.y - bulletPos.y,
         cubePos.z - bulletPos.z
@@ -111,9 +122,9 @@ export function initCollisionSystem(world: ECS) {
       // Apply impulse force at contact point in direction from bullet to cube
       cubeRB.applyImpulseAtPoint(
         { 
-          x: impactDir.x * IMPACT_FORCE, 
-          y: impactDir.y * IMPACT_FORCE, 
-          z: impactDir.z * IMPACT_FORCE 
+          x: impactDir.x * PhysicsConfig.IMPACT_FORCE, 
+          y: impactDir.y * PhysicsConfig.IMPACT_FORCE, 
+          z: impactDir.z * PhysicsConfig.IMPACT_FORCE 
         },
         {
           x: bulletPos.x,
@@ -126,9 +137,9 @@ export function initCollisionSystem(world: ECS) {
       // Add some random torque for realistic effect
       cubeRB.applyTorqueImpulse(
         {
-          x: (Math.random() - 0.5) * IMPACT_FORCE * 0.3,
-          y: (Math.random() - 0.5) * IMPACT_FORCE * 0.3,
-          z: (Math.random() - 0.5) * IMPACT_FORCE * 0.3
+          x: (Math.random() - 0.5) * PhysicsConfig.IMPACT_FORCE * 0.3,
+          y: (Math.random() - 0.5) * PhysicsConfig.IMPACT_FORCE * 0.3,
+          z: (Math.random() - 0.5) * PhysicsConfig.IMPACT_FORCE * 0.3
         },
         true
       );
@@ -138,22 +149,16 @@ export function initCollisionSystem(world: ECS) {
       addComponent(w, CollisionEvent, eventEid);
       CollisionEvent.entity1[eventEid] = projectileEid;
       CollisionEvent.entity2[eventEid] = cubeEid;
-      CollisionEvent.impulse[eventEid] = IMPACT_FORCE;
+      CollisionEvent.impulse[eventEid] = PhysicsConfig.IMPACT_FORCE;
       CollisionEvent.time[eventEid] = now;
       
       // Mark projectile for destruction
       markEntityForDeletion(projectileEid);
+      
+      // Release pooled vector
+      vec3Pool.release(impactDir);
     });
     
     return w;
   };
-  
-  // Helper function to mark projectiles for deletion
-  function markEntityForDeletion(eid: number) {
-    const mesh = world.ctx.maps.mesh.get(eid);
-    if (mesh) {
-      if (!mesh.userData) mesh.userData = {};
-      mesh.userData.markedForDeletion = true;
-    }
-  }
 } 

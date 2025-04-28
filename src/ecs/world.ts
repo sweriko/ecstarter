@@ -1,12 +1,16 @@
 import { createWorld, pipe } from 'bitecs';
 import { initInputSystem, InputState } from './systems/input.ts';
-import { initPlayerSystem }    from './systems/player.ts';
+import { initPlayerSystem }    from './systems/player';
 import { initProjectileSystem }from './systems/projectile.ts';
 import { initPhysicsSystem }   from './systems/physics.ts';
 import { initRenderSyncSystem }from './systems/renderSync.ts';
 import { initDebugVisSystem }  from './systems/debugVis.ts';
 import { initCollisionSystem } from './systems/collision.ts';
 import { initTimeStepSystem }  from './systems/timeStep.ts';
+import * as THREE from 'three';
+
+// Import Rapier types - use a type-only import to avoid runtime loading
+import type * as RAPIER from '@dimforge/rapier3d';
 
 /** Create ECS world + pipeline */
 export function createECS(ctx: ECSContext) {
@@ -39,14 +43,21 @@ export function createECS(ctx: ECSContext) {
 /* -------------------------------------------------- */
 /* Types shared with scene & systems                  */
 export interface ECSContext {
-  rapier: any;
-  physics: any;
-  three: any;
-  maps: {
-    rb: Map<number, any>;
-    mesh: Map<number, any>;
+  rapier: typeof RAPIER;
+  physics: RAPIER.World;
+  three: {
+    scene: THREE.Scene;
+    camera: THREE.Camera;
+    renderer: THREE.WebGLRenderer;
   };
-  eventQueue?: any; // Added for collision detection
+  maps: {
+    rb: Map<number, RAPIER.RigidBody>;
+    mesh: Map<number, THREE.Object3D>;
+  };
+  eventQueue?: RAPIER.EventQueue; 
+  kcc?: RAPIER.KinematicCharacterController; 
+  playerCollider?: RAPIER.Collider;
+  entityHandleMap?: Map<number, number>; // Map from RB handle to entity ID
 }
 
 export interface ECS {
@@ -60,5 +71,5 @@ export interface ECS {
     physicsSteps?: number;
     shouldRunPhysics?: boolean;
   };
-  input?: any;
+  input?: InputState;
 }

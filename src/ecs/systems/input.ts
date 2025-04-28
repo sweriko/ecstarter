@@ -1,6 +1,14 @@
-import { addComponent, defineQuery, enterQuery, hasComponent, addEntity } from 'bitecs';
+import { addComponent, addEntity } from 'bitecs';
 import { DebugVis } from '../components';
 import { ECS } from '../world';
+import { safeAddEventListener, setupEventCleanup } from '../utils/eventUtils';
+
+// Add property to Window interface
+declare global {
+  interface Window {
+    listenersAttached?: boolean;
+  }
+}
 
 export interface InputState {
   fw: boolean; bk: boolean; lf: boolean; rt: boolean;
@@ -51,25 +59,35 @@ export function initInputSystem(world: ECS) {
       vWasPressed = v;
     }
   };
-  addEventListener('keydown', e => key(e.code, true));
-  addEventListener('keyup',   e => key(e.code, false));
+  
+  // Only attach event listeners once
+  if (!window.listenersAttached) {
+    safeAddEventListener(window, 'keydown', e => key((e as KeyboardEvent).code, true));
+    safeAddEventListener(window, 'keyup',   e => key((e as KeyboardEvent).code, false));
 
-  /* mouse ---------------------------------------------------------- */
-  const canvas = document.getElementById('c') as HTMLCanvasElement;
-  canvas.addEventListener('click', () => canvas.requestPointerLock());
+    /* mouse ---------------------------------------------------------- */
+    const canvas = document.getElementById('c') as HTMLCanvasElement;
+    safeAddEventListener(canvas, 'click', () => canvas.requestPointerLock());
 
-  document.addEventListener('pointerlockchange', () => {
-    state.pointerLocked = !!document.pointerLockElement;
-  });
+    safeAddEventListener(document, 'pointerlockchange', () => {
+      state.pointerLocked = !!document.pointerLockElement;
+    });
 
-  addEventListener('mousemove', e => {
-    if (!state.pointerLocked) return;
-    state.dx += e.movementX;
-    state.dy += e.movementY;
-  });
+    safeAddEventListener(window, 'mousemove', e => {
+      if (!state.pointerLocked) return;
+      state.dx += (e as MouseEvent).movementX;
+      state.dy += (e as MouseEvent).movementY;
+    });
 
-  addEventListener('mousedown', e => { if (e.button === 0) state.shoot = true; });
-  addEventListener('mouseup',   e => { if (e.button === 0) state.shoot = false; });
+    safeAddEventListener(window, 'mousedown', e => { if ((e as MouseEvent).button === 0) state.shoot = true; });
+    safeAddEventListener(window, 'mouseup',   e => { if ((e as MouseEvent).button === 0) state.shoot = false; });
+    
+    // Set up event cleanup
+    setupEventCleanup();
+    
+    // Mark listeners as attached
+    window.listenersAttached = true;
+  }
 
   return (w: ECS) => { 
     // Set the input state on the world

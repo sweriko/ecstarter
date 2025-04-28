@@ -1,9 +1,9 @@
 import { defineQuery, removeEntity } from 'bitecs';
-import { Lifespan, Projectile, RigidBodyRef } from '../components';
+import { Lifespan, Projectile } from '../components';
 import { ECS } from '../world';
 import * as THREE from 'three';
 
-export function initProjectileSystem(world: ECS) {
+export function initProjectileSystem(_world: ECS) {
   const projectileQuery = defineQuery([Projectile, Lifespan]);
   
   return (w: ECS) => {
@@ -28,7 +28,7 @@ export function initProjectileSystem(world: ECS) {
       // Skip if body is no longer valid (prevents "unreachable" errors)
       try {
         // Just check if we can access a property - will throw if body is invalid
-        const _ = rb.handle;
+        rb.handle;
       } catch (error) {
         // Something's wrong with this rigid body, mark for removal
         console.warn("Invalid rigid body detected, removing entity", eid);

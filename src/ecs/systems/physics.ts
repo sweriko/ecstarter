@@ -1,15 +1,11 @@
 import { defineQuery, exitQuery } from 'bitecs';
 import { RigidBodyRef } from '../components';
 import { ECS } from '../world';
+import { PhysicsConfig, TimeStepConfig } from '../config';
 
-export function initPhysicsSystem(world: ECS) {
+export function initPhysicsSystem(_world: ECS) {
   const rbq = defineQuery([RigidBodyRef]);
   const exit = exitQuery(rbq);
-
-  // Physics configuration - can be adjusted for performance vs accuracy
-  const PHYSICS_SOLVER_ITERATIONS = 4; // More iterations for better stability
-  const PHYSICS_CCD_SUBSTEPS = 4; // Increase CCD substeps for better bullet collisions
-  const PHYSICS_VELOCITY_THRESHOLD = 30.0; // Velocity magnitude threshold for enabling CCD
 
   /* cleanup on entity removal */
   return (w: ECS) => {
@@ -39,11 +35,11 @@ export function initPhysicsSystem(world: ECS) {
           
           // Enable CCD for fast moving objects 
           // Check if this version of Rapier supports CCD toggling
-          if (speed > PHYSICS_VELOCITY_THRESHOLD && rb.enableCcd) {
+          if (speed > PhysicsConfig.VELOCITY_THRESHOLD && rb.enableCcd) {
             rb.enableCcd(true);
           } 
           // Disable CCD for slower objects to improve performance
-          else if (speed < PHYSICS_VELOCITY_THRESHOLD * 0.8 && rb.enableCcd) {
+          else if (speed < PhysicsConfig.VELOCITY_THRESHOLD * 0.8 && rb.enableCcd) {
             rb.enableCcd(false);
           }
         }
@@ -56,23 +52,26 @@ export function initPhysicsSystem(world: ECS) {
     try {
       if (w.ctx.physics.integrationParameters) {
         // Set solver iterations for more accurate simulation
-        w.ctx.physics.integrationParameters.numSolverIterations = PHYSICS_SOLVER_ITERATIONS;
+        w.ctx.physics.integrationParameters.numSolverIterations = PhysicsConfig.SOLVER_ITERATIONS;
         
         // Increase CCD substeps - critical for bullet physics!
-        w.ctx.physics.integrationParameters.maxCcdSubsteps = PHYSICS_CCD_SUBSTEPS;
+        w.ctx.physics.integrationParameters.maxCcdSubsteps = PhysicsConfig.CCD_SUBSTEPS;
       }
     } catch (e) {
       // Skip if the API doesn't support this
     }
     
     // Always use the fixed timestep from the time system
-    const dt = w.time.fixedDt || (1/60);
+    const dt = w.time.fixedDt || TimeStepConfig.FIXED_DT;
     
-    // Process physics step with fixed timestep
+    // Process physics step with fixed timestep - handle type issues with assertions
     if (w.ctx.eventQueue) {
-      w.ctx.physics.step(w.ctx.eventQueue, dt);
+      // Call step with the correct argument order based on Rapier type definitions
+      // Type assertion needed due to version differences in Rapier API
+      (w.ctx.physics.step as any)(w.ctx.eventQueue, dt);
     } else {
-      w.ctx.physics.step(dt);
+      // Type assertion needed due to differences in Rapier API versions
+      (w.ctx.physics.step as any)(dt);
     }
 
     /* purge removed RigidBodies */

@@ -1,22 +1,61 @@
-import { defineQuery, addComponent, addEntity, hasComponent } from 'bitecs';
-import { DebugVis, Projectile, Player, RigidBodyRef, DebugMeshRef, Trajectory } from '../components';
+import { defineQuery } from 'bitecs';
+import { DebugVis, Projectile, Player, RigidBodyRef } from '../components';
 import { ECS } from '../world';
 import * as THREE from 'three';
+import { vec3Pool } from '../utils/mathUtils';
+
+// Maximum number of points in trajectory
+const MAX_TRAJECTORY_POINTS = 100;
 
 export function initDebugVisSystem(world: ECS) {
   const debugQuery = defineQuery([DebugVis]);
   const playerQuery = defineQuery([Player, RigidBodyRef]);
   const projectileQuery = defineQuery([Projectile, RigidBodyRef]);
   
-  // Create debug visualization elements
-  const debugMeshes = new Map<number, THREE.Object3D>();
+  // Store trajectory data
   const trajectoryLines = new Map<number, THREE.Line>();
+  const trajectories = new Map<number, {
+    count: number,  // Current number of points
+    maxCount: number  // Maximum capacity
+  }>();
   
-  // Store history of positions for trajectories
-  const trajectories = new Map<number, THREE.Vector3[]>();
+  // Store pre-allocated buffers to avoid creating new ones each frame
+  const positionBuffers = new Map<number, {
+    array: Float32Array,
+    attribute: THREE.BufferAttribute
+  }>();
+  
+  // Shared line material for all trajectories
+  const lineMaterial = new THREE.LineBasicMaterial({ 
+    color: 0xff9900, 
+    transparent: true, 
+    opacity: 0.7 
+  });
   
   // Create player capsule mesh for debug
   let playerCapsule: THREE.Mesh | null = null;
+  
+  // Create a simple cylinder geometry
+  const createCylinderGeometry = (radius: number, height: number, widthSegments = 16): THREE.BufferGeometry => {
+    // Create cylinder body
+    return new THREE.CylinderGeometry(
+      radius, radius, height - radius * 2, widthSegments, 1, true
+    );
+  };
+  
+  // Initialize the debug capsule and materials
+  const wireframeMaterial = new THREE.MeshBasicMaterial({
+    color: 0x00ffff,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.7
+  });
+  
+  // Create the capsule mesh once at initialization
+  const capsuleGeometry = createCylinderGeometry(0.3, 1.8, 16);
+  playerCapsule = new THREE.Mesh(capsuleGeometry, wireframeMaterial);
+  world.ctx.three.scene.add(playerCapsule);
+  playerCapsule.visible = false; // Hidden by default
   
   return (w: ECS) => {
     // First check if debug visualization is enabled
@@ -24,22 +63,7 @@ export function initDebugVisSystem(world: ECS) {
     const debugId = debugEnts.length > 0 ? debugEnts[0] : -1;
     const debugActive = debugId !== -1 && DebugVis.active[debugId] === 1;
     
-    // Initialize player debug capsule if needed
-    if (!playerCapsule) {
-      // Create a capsule mesh
-      const capsuleGeometry = createCapsuleGeometry(0.3, 1.8, 16, 8);
-      const wireframeMaterial = new THREE.MeshBasicMaterial({
-        color: 0x00ffff,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.7
-      });
-      playerCapsule = new THREE.Mesh(capsuleGeometry, wireframeMaterial);
-      w.ctx.three.scene.add(playerCapsule);
-      playerCapsule.visible = false; // Hidden by default
-    }
-    
-    // Update player capsule visibility
+    // Update player capsule visibility and position
     if (playerCapsule) {
       playerCapsule.visible = debugActive;
       
@@ -64,40 +88,83 @@ export function initDebugVisSystem(world: ECS) {
       const rb = w.ctx.maps.rb.get(projectileEid);
       if (!rb) continue;
       
-      // Initialize trajectory if needed
-      if (!trajectories.has(projectileEid)) {
-        trajectories.set(projectileEid, []);
-      }
-      
       // Get position and add to trajectory
       const pos = rb.translation();
-      const currentPos = new THREE.Vector3(pos.x, pos.y, pos.z);
+      const currentPos = vec3Pool.get().set(pos.x, pos.y, pos.z);
       
-      // Add current position to trajectory and limit length
-      const trajectory = trajectories.get(projectileEid)!;
-      trajectory.push(currentPos.clone());
-      
-      if (trajectory.length > 100) {
-        trajectory.shift();
+      // Initialize trajectory and buffer if needed
+      if (!trajectories.has(projectileEid)) {
+        // Create trajectory tracking object
+        trajectories.set(projectileEid, {
+          count: 0,
+          maxCount: MAX_TRAJECTORY_POINTS
+        });
+        
+        // Pre-allocate the Float32Array with maximum size
+        const posArray = new Float32Array(MAX_TRAJECTORY_POINTS * 3);
+        const posAttribute = new THREE.BufferAttribute(posArray, 3);
+        positionBuffers.set(projectileEid, {
+          array: posArray,
+          attribute: posAttribute
+        });
       }
+      
+      // Get the trajectory data
+      const trajectory = trajectories.get(projectileEid)!;
+      // Get the buffer
+      const buffer = positionBuffers.get(projectileEid)!;
+      
+      // Add current position directly to the buffer
+      if (trajectory.count < MAX_TRAJECTORY_POINTS) {
+        // We have room, add at the end
+        const idx = trajectory.count * 3;
+        buffer.array[idx] = currentPos.x;
+        buffer.array[idx + 1] = currentPos.y;
+        buffer.array[idx + 2] = currentPos.z;
+        trajectory.count++;
+      } else {
+        // Shift all points one position back using copyWithin (much faster than loop)
+        buffer.array.copyWithin(0, 3);
+        
+        // Add new point at the end
+        const idx = (trajectory.count - 1) * 3;
+        buffer.array[idx] = currentPos.x;
+        buffer.array[idx + 1] = currentPos.y;
+        buffer.array[idx + 2] = currentPos.z;
+      }
+      
+      // Mark buffer for update
+      buffer.attribute.needsUpdate = true;
+      
+      // Release the pooled vector
+      vec3Pool.release(currentPos);
       
       // Only update/show trajectory lines if debug is active
       if (debugActive) {
         if (trajectoryLines.has(projectileEid)) {
-          // Update existing line
+          // Update existing line - reuse the geometry
           const line = trajectoryLines.get(projectileEid)!;
           line.visible = true;
-          line.geometry.dispose();
-          line.geometry = new THREE.BufferGeometry().setFromPoints(trajectory);
+          
+          // Get the pre-allocated buffer and update it
+          const buffer = positionBuffers.get(projectileEid)!;
+          
+          // Update geometry to draw only the current points
+          line.geometry.setDrawRange(0, trajectory.count);
+          buffer.attribute.needsUpdate = true;
         } else {
-          // Create new line
-          const material = new THREE.LineBasicMaterial({ 
-            color: 0xff9900, 
-            transparent: true, 
-            opacity: 0.7 
-          });
-          const geometry = new THREE.BufferGeometry().setFromPoints(trajectory);
-          const line = new THREE.Line(geometry, material);
+          // Create new line with dynamic buffer geometry
+          const geometry = new THREE.BufferGeometry();
+          const buffer = positionBuffers.get(projectileEid)!;
+          
+          // Add attribute to geometry
+          geometry.setAttribute('position', buffer.attribute);
+          
+          // Set initial draw range
+          geometry.setDrawRange(0, trajectory.count);
+          
+          // Use the shared material
+          const line = new THREE.Line(geometry, lineMaterial);
           trajectoryLines.set(projectileEid, line);
           w.ctx.three.scene.add(line);
         }
@@ -123,39 +190,15 @@ export function initDebugVisSystem(world: ECS) {
         line.geometry.dispose();
         if (line.material instanceof THREE.Material) {
           line.material.dispose();
+        } else if (Array.isArray(line.material)) {
+          line.material.forEach(mat => mat.dispose());
         }
         trajectoryLines.delete(eid);
         trajectories.delete(eid);
+        positionBuffers.delete(eid);
       }
     }
     
     return w;
   };
-}
-
-// Create a capsule geometry (cylinder with hemispheres at ends)
-function createCapsuleGeometry(radius: number, height: number, widthSegments = 16, heightSegments = 8): THREE.BufferGeometry {
-  // Calculate half height (cylinder height without the spherical caps)
-  const halfHeight = height / 2 - radius;
-  
-  // Create cylinder body
-  const cylinderGeometry = new THREE.CylinderGeometry(
-    radius, radius, height - radius * 2, widthSegments, 1, true
-  );
-  
-  // Create top hemisphere
-  const topSphereGeometry = new THREE.SphereGeometry(
-    radius, widthSegments, heightSegments, 0, Math.PI * 2, 0, Math.PI / 2
-  );
-  topSphereGeometry.translate(0, halfHeight, 0);
-  
-  // Create bottom hemisphere
-  const bottomSphereGeometry = new THREE.SphereGeometry(
-    radius, widthSegments, heightSegments, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2
-  );
-  bottomSphereGeometry.translate(0, -halfHeight, 0);
-  
-  // For simplicity we'll just use the cylinder geometry
-  // A proper implementation would merge these three geometries
-  return cylinderGeometry;
 } 
