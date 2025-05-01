@@ -43,6 +43,12 @@ export const CollisionEvent = defineComponent({
   time: Types.f32          // When collision occurred
 });
 
+/** Grass component for stylized grass system */
+export const Grass = defineComponent({
+  totalTime: Types.f32,
+  // We'll store the camera and scene references in the ECS context
+});
+
 /** Tags */
 export const Player   = defineComponent();
 export const Projectile = defineComponent();

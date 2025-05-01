@@ -7,10 +7,12 @@ import { initRenderSyncSystem }from './systems/renderSync.ts';
 import { initDebugVisSystem }  from './systems/debugVis.ts';
 import { initCollisionSystem } from './systems/collision.ts';
 import { initTimeStepSystem }  from './systems/timeStep.ts';
+import { initGrassSystem }     from './systems/grass.ts';
 import * as THREE from 'three';
 
 // Import Rapier types - use a type-only import to avoid runtime loading
 import type * as RAPIER from '@dimforge/rapier3d';
+import { GrassComponent } from './utils/grass';
 
 /** Create ECS world + pipeline */
 export function createECS(ctx: ECSContext) {
@@ -33,6 +35,7 @@ export function createECS(ctx: ECSContext) {
     initPhysicsSystem(world),   // Physics runs before collision system to process contacts
     initCollisionSystem(world), // Now handles Rapier collision events instead of raycasting
     initProjectileSystem(world),
+    initGrassSystem(world),     // Add the grass system
     initDebugVisSystem(world),
     initRenderSyncSystem(world)
   );
@@ -47,12 +50,13 @@ export interface ECSContext {
   physics: RAPIER.World;
   three: {
     scene: THREE.Scene;
-    camera: THREE.Camera;
+    camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
   };
   maps: {
     rb: Map<number, RAPIER.RigidBody>;
     mesh: Map<number, THREE.Object3D>;
+    grass?: Map<number, GrassComponent>;
   };
   eventQueue?: RAPIER.EventQueue; 
   kcc?: RAPIER.KinematicCharacterController; 
