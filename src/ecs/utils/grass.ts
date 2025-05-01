@@ -519,7 +519,7 @@ export class GrassComponent {
     this.group.name = "GRASS";
     
     // Load grass texture
-    this.grassTexture = new THREE.TextureLoader().load('/public/textures/grassblade.png');
+    this.grassTexture = new THREE.TextureLoader().load('/textures/grassblade.png');
     this.grassTexture.wrapS = THREE.ClampToEdgeWrapping;
     this.grassTexture.wrapT = THREE.ClampToEdgeWrapping;
     this.grassTexture.minFilter = THREE.LinearFilter;
